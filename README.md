@@ -167,7 +167,7 @@ chmod +x scripts/*.sh
 
 ## 📖 Read the Full Article
 
-See [`docs/MEDIUM_ARTICLE.md`](docs/MEDIUM_ARTICLE.md) for the complete Medium article.
+See "MEDIUM_ARTICLE_LINK" for the complete Medium article.
 
 ---
 
