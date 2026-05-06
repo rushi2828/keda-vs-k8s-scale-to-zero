@@ -1,0 +1,185 @@
+################################################################################
+# Sample Worker Application
+# A realistic Python-based SQS message processor.
+# This is what KEDA and native HPA are scaling.
+################################################################################
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keda-demo
+  labels:
+    app.kubernetes.io/managed-by: kubectl
+    demo: keda-scale-to-zero
+---
+# ConfigMap holds non-secret app config
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: worker-config
+  namespace: keda-demo
+data:
+  # These are replaced by setup.sh with real Terraform output values
+  AWS_DEFAULT_REGION: "us-east-1"
+  QUEUE_URL: "REPLACE_WITH_TERRAFORM_OUTPUT_sqs_queue_url"
+  LOG_LEVEL: "INFO"
+  BATCH_SIZE: "10"          # How many SQS messages to pull per API call
+  VISIBILITY_TIMEOUT: "60"  # Seconds to process a message before it reappears
+  SIMULATED_WORK_MS: "500"  # Simulated processing time per message (ms)
+---
+# ServiceAccount with IRSA annotation
+# IRSA = IAM Roles for Service Accounts
+# This tells AWS: "pods using this SA can assume the worker IAM role"
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sqs-worker
+  namespace: keda-demo
+  annotations:
+    # Set by setup.sh from: terraform output -raw worker_role_arn
+    eks.amazonaws.com/role-arn: "REPLACE_WITH_TERRAFORM_OUTPUT_worker_role_arn"
+---
+# The worker Deployment
+# Starts at 0 replicas — KEDA manages the replica count entirely
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sqs-worker
+  namespace: keda-demo
+  labels:
+    app: sqs-worker
+    version: v1
+  annotations:
+    # Documents what manages this deployment
+    keda.sh/managed-by: "keda-scaledobject/sqs-worker-scaler"
+spec:
+  replicas: 0  # KEDA owns this — do not set manually
+  selector:
+    matchLabels:
+      app: sqs-worker
+  # Keep 1 old pod running during rolling update to avoid message loss
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: sqs-worker
+        version: v1
+    spec:
+      serviceAccountName: sqs-worker
+
+      # Graceful shutdown: finish processing current batch before terminating
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: worker
+          # Using python:3.12-slim for a realistic worker image
+          # In production swap this for your actual worker image
+          image: python:3.12-slim
+
+          # Inline Python worker script
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              pip install boto3 --quiet
+
+              python3 - <<'PYTHON'
+              import boto3, os, time, json, logging, signal, sys
+
+              logging.basicConfig(
+                  level=os.environ.get("LOG_LEVEL", "INFO"),
+                  format="%(asctime)s [%(levelname)s] %(message)s"
+              )
+              log = logging.getLogger("sqs-worker")
+
+              QUEUE_URL   = os.environ["QUEUE_URL"]
+              REGION      = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+              BATCH_SIZE  = int(os.environ.get("BATCH_SIZE", "10"))
+              WORK_MS     = int(os.environ.get("SIMULATED_WORK_MS", "500"))
+              VISIBILITY  = int(os.environ.get("VISIBILITY_TIMEOUT", "60"))
+
+              sqs = boto3.client("sqs", region_name=REGION)
+              running = True
+
+              def shutdown(sig, frame):
+                  global running
+                  log.info("Shutdown signal received — finishing current batch")
+                  running = False
+
+              signal.signal(signal.SIGTERM, shutdown)
+              signal.signal(signal.SIGINT, shutdown)
+
+              log.info(f"Worker started. Queue: {QUEUE_URL}")
+              log.info(f"Batch size: {BATCH_SIZE}, Simulated work: {WORK_MS}ms")
+
+              while running:
+                  try:
+                      resp = sqs.receive_message(
+                          QueueUrl=QUEUE_URL,
+                          MaxNumberOfMessages=BATCH_SIZE,
+                          WaitTimeSeconds=20,      # Long-polling: wait up to 20s for msgs
+                          VisibilityTimeout=VISIBILITY,
+                          AttributeNames=["All"],
+                          MessageAttributeNames=["All"],
+                      )
+
+                      messages = resp.get("Messages", [])
+                      if not messages:
+                          log.debug("No messages — long-poll returned empty")
+                          continue
+
+                      log.info(f"Received {len(messages)} message(s)")
+
+                      for msg in messages:
+                          body = json.loads(msg["Body"])
+                          log.info(f"Processing job_id={body.get('job_id', 'unknown')}")
+
+                          # Simulate actual work
+                          time.sleep(WORK_MS / 1000)
+
+                          # Delete message after successful processing
+                          sqs.delete_message(
+                              QueueUrl=QUEUE_URL,
+                              ReceiptHandle=msg["ReceiptHandle"]
+                          )
+
+                      log.info(f"Batch of {len(messages)} processed and deleted")
+
+                  except Exception as e:
+                      log.error(f"Error processing messages: {e}")
+                      time.sleep(5)  # Back off on error
+
+              log.info("Worker shut down cleanly")
+              PYTHON
+
+          envFrom:
+            - configMapRef:
+                name: worker-config
+
+          resources:
+            requests:
+              cpu: "100m"      # 0.1 vCPU — lightweight worker
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          # Liveness probe: restart pod if it hangs for too long
+          livenessProbe:
+            exec:
+              command: ["python3", "-c", "import sys; sys.exit(0)"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+
+      # Spread pods across nodes for resilience when scaled to N > 1
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: sqs-worker

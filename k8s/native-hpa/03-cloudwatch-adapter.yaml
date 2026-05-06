@@ -1,0 +1,86 @@
+################################################################################
+# CloudWatch Adapter for Native HPA
+#
+# WHY THIS IS NEEDED:
+# When your Deployment is at 0 replicas, there are NO pods running.
+# No pods = no CPU/memory metrics = the HPA is blind.
+#
+# The native HPA needs an EXTERNAL metric source it can read even when
+# pods = 0. We use AWS CloudWatch, which continuously records SQS queue
+# depth regardless of how many pods are running.
+#
+# The k8s-cloudwatch-adapter bridges CloudWatch → Kubernetes External Metrics API
+# so the HPA can use SQS queue depth as a scaling signal.
+#
+# INSTALL STEPS (run these manually before applying this file):
+#
+#   helm repo add k8s-cloudwatch-adapter \
+#     https://awslabs.github.io/k8s-cloudwatch-adapter/
+#
+#   helm install cloudwatch-adapter \
+#     k8s-cloudwatch-adapter/k8s-cloudwatch-adapter \
+#     --namespace kube-system \
+#     --set aws.region=us-east-1
+#
+################################################################################
+---
+# ExternalMetric CRD — tells the CloudWatch adapter what metric to fetch
+# and how to expose it to the Kubernetes External Metrics API.
+#
+# After this is applied, the HPA can reference:
+#   type: External
+#   external:
+#     metric:
+#       name: sqs_approximate_number_of_messages_visible
+#
+apiVersion: metrics.aws/v1alpha1
+kind: ExternalMetric
+metadata:
+  name: sqs-messages-visible
+  namespace: native-hpa-demo
+spec:
+  # This name must match what you put in the HPA spec
+  name: sqs_approximate_number_of_messages_visible
+
+  resource:
+    resource: "deployment"
+
+  queries:
+    - id: sqs_msgs
+      metricStat:
+        metric:
+          namespace: AWS/SQS
+          metricName: ApproximateNumberOfMessagesVisible
+          dimensions:
+            - name: QueueName
+              # Replace with your actual queue name from Terraform output:
+              # terraform output -raw sqs_queue_name
+              value: "REPLACE_WITH_TERRAFORM_OUTPUT_sqs_queue_name"
+        period: 30       # CloudWatch minimum standard = 60s; high-res = 30s
+        stat: Average    # Use Average over the period
+        unit: Count
+      returnData: true
+---
+# ExternalMetric for in-flight messages too (optional but more accurate)
+apiVersion: metrics.aws/v1alpha1
+kind: ExternalMetric
+metadata:
+  name: sqs-messages-in-flight
+  namespace: native-hpa-demo
+spec:
+  name: sqs_approximate_number_of_messages_not_visible
+  resource:
+    resource: "deployment"
+  queries:
+    - id: sqs_inflight
+      metricStat:
+        metric:
+          namespace: AWS/SQS
+          metricName: ApproximateNumberOfMessagesNotVisible
+          dimensions:
+            - name: QueueName
+              value: "REPLACE_WITH_TERRAFORM_OUTPUT_sqs_queue_name"
+        period: 30
+        stat: Average
+        unit: Count
+      returnData: true

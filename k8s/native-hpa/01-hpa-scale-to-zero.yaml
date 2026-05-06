@@ -1,0 +1,152 @@
+---
+# Native HPA Scale-to-Zero Demo (Kubernetes 1.36+)
+#
+# KEY CONTEXT:
+# The HPAScaleToZero feature gate has been in alpha since K8s 1.16.
+# In Kubernetes 1.36 (releasing ~April 22, 2026), it is ENABLED BY DEFAULT.
+#
+# CRITICAL LIMITATION vs KEDA:
+# When a deployment is at 0 replicas, there are no pods to emit CPU/memory metrics.
+# Native HPA is blind at zero — it CANNOT scale up from 0 using CPU/memory metrics.
+# You MUST use an external metric source (like SQS ApproximateNumberOfMessages
+# via CloudWatch) for the HPA to know when to scale from 0→1.
+# This is exactly what KEDA wraps natively.
+#
+# REQUIREMENTS:
+# - Kubernetes 1.36+ (HPAScaleToZero enabled by default)
+# - metrics-server (for CPU/memory metrics)
+# - external metrics adapter (for SQS/CloudWatch metrics at zero)
+#   e.g. k8s-cloudwatch-adapter or prometheus-adapter
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: native-hpa-demo
+  labels:
+    demo: native-hpa-scale-to-zero
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: http-worker
+  namespace: native-hpa-demo
+  labels:
+    app: http-worker
+    demo: native-hpa
+spec:
+  replicas: 1  # HPA will manage this down to 0
+  selector:
+    matchLabels:
+      app: http-worker
+  template:
+    metadata:
+      labels:
+        app: http-worker
+        demo: native-hpa
+    spec:
+      containers:
+        - name: worker
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "128Mi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: http-worker
+  namespace: native-hpa-demo
+spec:
+  selector:
+    app: http-worker
+  ports:
+    - port: 80
+      targetPort: 80
+---
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  NATIVE HPA WITH minReplicas: 0  (Kubernetes 1.36+)         ║
+# ║                                                              ║
+# ║  This works because HPAScaleToZero feature gate is           ║
+# ║  enabled by default in K8s 1.36.                             ║
+# ║                                                              ║
+# ║  For scaling FROM zero, we use an external metric            ║
+# ║  (CloudWatch SQS queue depth via k8s-cloudwatch-adapter).    ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: http-worker-hpa
+  namespace: native-hpa-demo
+  labels:
+    demo: native-hpa-scale-to-zero
+  annotations:
+    # Document that this requires K8s 1.36+
+    kubernetes.io/description: "Native HPA scale-to-zero. Requires K8s 1.36+ with HPAScaleToZero enabled."
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: http-worker
+
+  # ─── THE KEY LINE ────────────────────────────────────────────
+  # minReplicas: 0 is what makes this "scale to zero"
+  # In K8s < 1.36 this would be silently overridden to 1
+  # In K8s 1.36+ this works as expected (HPAScaleToZero=true)
+  minReplicas: 0
+  maxReplicas: 20
+
+  metrics:
+    # CPU metric: works for scaling 1→N but NOT 0→1 (no pods = no metrics)
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+    # External metric: used for 0→1 scale-up decision
+    # This requires the k8s-cloudwatch-adapter to be installed
+    # See: https://github.com/awslabs/k8s-cloudwatch-adapter
+    - type: External
+      external:
+        metric:
+          name: sqs_approximate_number_of_messages_visible
+          selector:
+            matchLabels:
+              # These labels map to the ExternalMetric CRD (see 03-external-metric.yaml)
+              queue: "keda-vs-hpa-demo-keda-demo"
+        target:
+          type: AverageValue
+          averageValue: "5" # Scale when > 5 messages per replica
+
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 120  # Wait 2 min before scaling to 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0   # Scale up immediately
+      policies:
+        - type: Pods
+          value: 5
+          periodSeconds: 30
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+      selectPolicy: Max

@@ -1,0 +1,34 @@
+---
+# ExternalMetric CRD for k8s-cloudwatch-adapter
+# This allows native HPA to use SQS queue depth as a scaling metric
+# enabling it to "see" demand even when deployment is at 0 replicas.
+#
+# Install the adapter first:
+#   helm repo add k8s-cloudwatch-adapter https://awslabs.github.io/k8s-cloudwatch-adapter/
+#   helm install aws-cloudwatch-metrics k8s-cloudwatch-adapter/k8s-cloudwatch-adapter \
+#     --namespace kube-system \
+#     --set aws.region=us-east-1
+
+apiVersion: metrics.aws/v1alpha1
+kind: ExternalMetric
+metadata:
+  name: sqs-approximate-number-of-messages-visible
+  namespace: native-hpa-demo
+spec:
+  name: sqs_approximate_number_of_messages_visible
+  resource:
+    resource: "deployment"
+  queries:
+    - id: sqs_msgs
+      metricStat:
+        metric:
+          namespace: AWS/SQS
+          metricName: ApproximateNumberOfMessagesVisible
+          dimensions:
+            - name: QueueName
+              # Replace with your actual SQS queue name from Terraform output
+              value: "keda-vs-hpa-demo-keda-demo"
+        period: 30
+        stat: Average
+        unit: Count
+      returnData: true

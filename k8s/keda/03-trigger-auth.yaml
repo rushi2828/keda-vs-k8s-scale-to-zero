@@ -1,0 +1,44 @@
+################################################################################
+# KEDA TriggerAuthentication
+#
+# WHY THIS FILE EXISTS:
+# KEDA needs credentials to call the AWS SQS API and read queue depth.
+# Instead of storing AWS keys as Kubernetes Secrets (insecure), we use
+# EKS Pod Identity / IRSA — the pod assumes an IAM role automatically.
+#
+# The TriggerAuthentication resource tells KEDA: "use Pod Identity (AWS IRSA)
+# to authenticate — don't look for any secret keys."
+#
+# FLOW:
+#   keda-operator pod
+#     → has ServiceAccount annotation: eks.amazonaws.com/role-arn
+#     → AWS STS gives it a short-lived token
+#     → uses token to call sqs:GetQueueAttributes
+#     → reads queue depth → makes scaling decision
+################################################################################
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: aws-sqs-auth
+  namespace: keda-demo
+  labels:
+    demo: keda-scale-to-zero
+spec:
+  # podIdentity tells KEDA to use the pod's IAM role (via IRSA/Pod Identity)
+  # instead of environment variables or Kubernetes secrets.
+  # provider: aws  → uses the ServiceAccount's IRSA annotation automatically
+  podIdentity:
+    provider: aws
+---
+# ClusterTriggerAuthentication — same thing but cluster-wide
+# Use this if you want multiple namespaces to share the same auth config.
+# Commented out for now; uncomment if you add more namespaces.
+#
+# apiVersion: keda.sh/v1alpha1
+# kind: ClusterTriggerAuthentication
+# metadata:
+#   name: aws-sqs-auth-global
+# spec:
+#   podIdentity:
+#     provider: aws

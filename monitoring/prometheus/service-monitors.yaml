@@ -1,0 +1,71 @@
+---
+# ServiceMonitor for KEDA Operator metrics
+# Requires kube-prometheus-stack installed in 'monitoring' namespace
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: keda-operator
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - keda
+  selector:
+    matchLabels:
+      app: keda-operator
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics
+---
+# ServiceMonitor for KEDA Metrics Adapter
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: keda-metrics-apiserver
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - keda
+  selector:
+    matchLabels:
+      app: keda-metrics-apiserver
+  endpoints:
+    - port: metrics
+      interval: 15s
+---
+# PrometheusRule: Alert when KEDA fails to connect to scaler
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: keda-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: keda.rules
+      interval: 30s
+      rules:
+        - alert: KEDAScalerError
+          expr: keda_scaler_errors_total > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "KEDA scaler is reporting errors"
+            description: "KEDA scaler {{ $labels.scaler }} in namespace {{ $labels.namespace }} is reporting errors. Check KEDA operator logs."
+
+        - alert: KEDAScaledObjectNotReady
+          expr: keda_scaled_object_condition{condition="Ready", status="False"} == 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "KEDA ScaledObject is not ready"
+            description: "ScaledObject {{ $labels.scaledObject }} in {{ $labels.namespace }} is not ready."

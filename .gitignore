@@ -1,0 +1,27 @@
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.hcl
+terraform.tfvars
+!terraform.tfvars.example
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+
+# Kubernetes secrets (never commit these)
+**/secrets.yaml
+**/secret.yaml
+kubeconfig
+
+# Benchmark results (generated files)
+benchmark-results-*.json
+
+# Misc
+.DS_Store
+*.swp
+*.swo
+.env
+.envrc
+*.log

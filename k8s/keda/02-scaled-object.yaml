@@ -1,0 +1,91 @@
+---
+# ScaledObject: The core KEDA resource that links your Deployment to an event source
+# This is what makes KEDA fundamentally different from native HPA:
+# - It polls SQS queue depth (not CPU/memory)
+# - It can scale to 0 when the queue is empty
+# - It wakes up the deployment the moment messages arrive
+
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: sqs-worker-scaler
+  namespace: keda-demo
+  labels:
+    demo: keda-scale-to-zero
+  annotations:
+    # Track scale-to-zero events for benchmarking
+    scaledobject.keda.sh/transfer-hpa-ownership: "true"
+spec:
+  # Target the deployment to scale
+  scaleTargetRef:
+    name: sqs-worker
+
+  # ────────────────────────────────────────────────────
+  # Scale-to-Zero Configuration
+  # minReplicaCount: 0 means KEDA will fully scale down
+  # when no messages are in queue.
+  # ────────────────────────────────────────────────────
+  minReplicaCount: 0
+  maxReplicaCount: 20
+
+  # How often KEDA polls the trigger (seconds)
+  pollingInterval: 10
+
+  # How long to wait before scaling down (gives time for in-flight messages)
+  cooldownPeriod: 60
+
+  # KEDA creates an HPA and manages it — this is the HPA config
+  advanced:
+    restoreToOriginalReplicaCount: false
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Percent
+              value: 50
+              periodSeconds: 30
+        scaleUp:
+          stabilizationWindowSeconds: 0  # Scale up immediately!
+          policies:
+            - type: Pods
+              value: 5
+              periodSeconds: 15
+
+  triggers:
+    - type: aws-sqs-queue
+      authenticationRef:
+        name: aws-sqs-auth
+      metadata:
+        # Replace with your actual queue URL from Terraform output
+        queueURL: "https://sqs.us-east-1.amazonaws.com/ACCOUNT_ID/keda-vs-hpa-demo-keda-demo"
+        queueLength: "5"      # 1 pod per 5 messages in queue
+        awsRegion: "us-east-1"
+        scaleOnInFlight: "true" # Count in-flight messages too
+---
+# OPTIONAL: ScaledJob variant
+# Use this instead of ScaledObject when you want each message processed by a fresh pod
+# (true serverless pattern — one pod per batch of messages)
+
+# apiVersion: keda.sh/v1alpha1
+# kind: ScaledJob
+# metadata:
+#   name: sqs-worker-job
+#   namespace: keda-demo
+# spec:
+#   jobTargetRef:
+#     template:
+#       spec:
+#         containers:
+#           - name: worker
+#             image: amazon/aws-cli:latest
+#             ...
+#         restartPolicy: OnFailure
+#   triggers:
+#     - type: aws-sqs-queue
+#       authenticationRef:
+#         name: aws-sqs-auth
+#       metadata:
+#         queueURL: "https://sqs.us-east-1.amazonaws.com/ACCOUNT_ID/..."
+#         queueLength: "1"
+#         awsRegion: "us-east-1"

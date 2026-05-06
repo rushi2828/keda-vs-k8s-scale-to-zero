@@ -1,0 +1,99 @@
+---
+# 1. Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keda-demo
+  labels:
+    demo: keda-scale-to-zero
+---
+# 2. TriggerAuthentication — uses IRSA annotation on ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keda-worker
+  namespace: keda-demo
+  annotations:
+    # Set this to the IRSA role ARN output from Terraform
+    eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/keda-vs-hpa-demo-keda-operator"
+---
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: aws-sqs-auth
+  namespace: keda-demo
+spec:
+  podIdentity:
+    provider: aws
+---
+# 3. The SQS Worker Deployment (starts at 0 replicas — KEDA will manage it)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sqs-worker
+  namespace: keda-demo
+  labels:
+    app: sqs-worker
+    demo: keda
+spec:
+  replicas: 0  # KEDA manages this — starts at 0
+  selector:
+    matchLabels:
+      app: sqs-worker
+  template:
+    metadata:
+      labels:
+        app: sqs-worker
+        demo: keda
+    spec:
+      serviceAccountName: keda-worker
+      containers:
+        - name: worker
+          image: amazon/aws-cli:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Worker started at $(date)"
+              while true; do
+                MSG=$(aws sqs receive-message \
+                  --queue-url "$QUEUE_URL" \
+                  --max-number-of-messages 10 \
+                  --wait-time-seconds 20 \
+                  --output json)
+                if [ -n "$MSG" ]; then
+                  echo "Processing $(echo $MSG | jq '.Messages | length') messages..."
+                  # Simulate work
+                  sleep 2
+                  # Delete messages
+                  echo $MSG | jq -r '.Messages[].ReceiptHandle' | while read handle; do
+                    aws sqs delete-message \
+                      --queue-url "$QUEUE_URL" \
+                      --receipt-handle "$handle"
+                  done
+                fi
+              done
+          env:
+            - name: QUEUE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: keda-demo-config
+                  key: sqs_queue_url
+            - name: AWS_DEFAULT_REGION
+              value: "us-east-1"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keda-demo-config
+  namespace: keda-demo
+data:
+  # Replace with actual SQS URL from Terraform output
+  sqs_queue_url: "https://sqs.us-east-1.amazonaws.com/ACCOUNT_ID/keda-vs-hpa-demo-keda-demo"

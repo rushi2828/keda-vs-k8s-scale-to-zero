@@ -1,0 +1,3 @@
+# Copy this file to terraform.tfvars and fill in your values
+aws_region      = "us-east-1"
+cluster_version = "1.36" # Use 1.36 for native HPAScaleToZero enabled by default

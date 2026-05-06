@@ -1,0 +1,142 @@
+################################################################################
+# Native HPA Demo App
+# A simple HTTP server used to demonstrate native HPA scale-to-zero.
+# Different from the KEDA worker — this one serves HTTP requests.
+################################################################################
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: native-hpa-demo
+  labels:
+    demo: native-hpa-scale-to-zero
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: http-worker-config
+  namespace: native-hpa-demo
+data:
+  QUEUE_URL: "REPLACE_WITH_TERRAFORM_OUTPUT_sqs_queue_url"
+  AWS_DEFAULT_REGION: "us-east-1"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: http-worker
+  namespace: native-hpa-demo
+  annotations:
+    # Same worker role as keda-demo — reads same SQS queue
+    eks.amazonaws.com/role-arn: "REPLACE_WITH_TERRAFORM_OUTPUT_worker_role_arn"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: http-worker
+  namespace: native-hpa-demo
+  labels:
+    app: http-worker
+    demo: native-hpa
+  annotations:
+    description: "Demo app for native HPA scale-to-zero (K8s 1.36+)"
+spec:
+  replicas: 1  # Starts at 1 — native HPA will scale this down to 0
+  selector:
+    matchLabels:
+      app: http-worker
+  template:
+    metadata:
+      labels:
+        app: http-worker
+        demo: native-hpa
+    spec:
+      serviceAccountName: http-worker
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: http-worker
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              pip install boto3 --quiet
+
+              python3 - <<'PYTHON'
+              import boto3, os, time, json, logging
+              from http.server import HTTPServer, BaseHTTPRequestHandler
+
+              logging.basicConfig(level="INFO", format="%(asctime)s %(message)s")
+              log = logging.getLogger("http-worker")
+
+              QUEUE_URL = os.environ.get("QUEUE_URL", "")
+              REGION    = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+
+              class Handler(BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      if self.path == "/health":
+                          self.send_response(200)
+                          self.end_headers()
+                          self.wfile.write(b"ok")
+                      elif self.path == "/metrics":
+                          # Expose a simple metric for the HPA
+                          self.send_response(200)
+                          self.end_headers()
+                          self.wfile.write(b"http_requests_total 1")
+                      else:
+                          # Simulate work
+                          time.sleep(0.1)
+                          self.send_response(200)
+                          self.end_headers()
+                          self.wfile.write(b"processed")
+                  def log_message(self, fmt, *args):
+                      log.info(fmt % args)
+
+              log.info("HTTP worker listening on :8080")
+              HTTPServer(("", 8080), Handler).serve_forever()
+              PYTHON
+
+          ports:
+            - containerPort: 8080
+              name: http
+
+          envFrom:
+            - configMapRef:
+                name: http-worker-config
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: http-worker
+  namespace: native-hpa-demo
+  labels:
+    app: http-worker
+spec:
+  selector:
+    app: http-worker
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+  type: ClusterIP

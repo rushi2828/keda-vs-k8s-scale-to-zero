@@ -1,0 +1,222 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "description": "KEDA vs Native HPA Scale-to-Zero Comparison Dashboard",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "KEDA — SQS Queue Depth",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "expr": "keda_scaler_metrics_value{namespace=\"keda-demo\"}",
+          "legendFormat": "Queue Depth"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "KEDA — Replica Count (sqs-worker)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "kube_deployment_spec_replicas{namespace=\"keda-demo\",deployment=\"sqs-worker\"}",
+          "legendFormat": "Desired Replicas"
+        },
+        {
+          "expr": "kube_deployment_status_replicas_ready{namespace=\"keda-demo\",deployment=\"sqs-worker\"}",
+          "legendFormat": "Ready Replicas"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Native HPA — Replica Count (http-worker)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "kube_horizontalpodautoscaler_spec_min_replicas{namespace=\"native-hpa-demo\"}",
+          "legendFormat": "Min Replicas (HPA)"
+        },
+        {
+          "expr": "kube_horizontalpodautoscaler_status_current_replicas{namespace=\"native-hpa-demo\"}",
+          "legendFormat": "Current Replicas"
+        },
+        {
+          "expr": "kube_deployment_status_replicas_ready{namespace=\"native-hpa-demo\",deployment=\"http-worker\"}",
+          "legendFormat": "Ready Pods"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Scale Events Timeline",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "lineWidth": 2 }
+        }
+      },
+      "targets": [
+        {
+          "expr": "kube_deployment_status_replicas_ready{namespace=\"keda-demo\",deployment=\"sqs-worker\"}",
+          "legendFormat": "KEDA Worker Pods"
+        },
+        {
+          "expr": "kube_deployment_status_replicas_ready{namespace=\"native-hpa-demo\",deployment=\"http-worker\"}",
+          "legendFormat": "Native HPA Pods"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "KEDA Scaler Activity",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 1 },
+            { "color": "red", "value": 10 }
+          ]}
+        }
+      },
+      "targets": [
+        {
+          "expr": "keda_scaler_metrics_value{namespace=\"keda-demo\"}",
+          "legendFormat": "Current Queue Depth"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "KEDA — Is Active?",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 16 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "text": "SCALED TO ZERO", "color": "blue" }, "1": { "text": "ACTIVE", "color": "green" }}, "type": "value" }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "keda_scaler_active{namespace=\"keda-demo\"}",
+          "legendFormat": "KEDA Active"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "HPA Condition — ScaledToZero",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 16 },
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "options": { "0": { "text": "RUNNING", "color": "green" }, "1": { "text": "AT ZERO", "color": "blue" }}, "type": "value" }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "kube_horizontalpodautoscaler_status_condition{namespace=\"native-hpa-demo\",condition=\"ScalingActive\",status=\"false\"}",
+          "legendFormat": "HPA Scaled To Zero"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Node Count (Karpenter Managed)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 20 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "expr": "count(kube_node_info)",
+          "legendFormat": "Total Nodes"
+        },
+        {
+          "expr": "count(kube_node_info{node=~\".*karpenter.*\"})",
+          "legendFormat": "Karpenter Nodes"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Cost Savings Estimate (per hour)",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 20 },
+      "datasource": "Prometheus",
+      "description": "Estimated savings from pods scaled to zero vs always-on (m5.large = $0.096/hr per pod)",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [
+            { "color": "green", "value": null }
+          ]}
+        }
+      },
+      "targets": [
+        {
+          "expr": "(2 - kube_deployment_status_replicas_ready{namespace=\"keda-demo\",deployment=\"sqs-worker\"}) * 0.096 / 3600 * (2 - kube_deployment_status_replicas_ready{namespace=\"keda-demo\",deployment=\"sqs-worker\"} >= 0)",
+          "legendFormat": "KEDA Hourly Savings"
+        }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "tags": ["keda", "autoscaling", "scale-to-zero", "kubernetes"],
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "title": "KEDA vs Native HPA: Scale-to-Zero Comparison",
+  "uid": "keda-vs-hpa-s2z",
+  "version": 1
+}
